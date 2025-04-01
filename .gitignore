@@ -1,0 +1,12 @@
+# Ignore raw data and preprocessed frames
+data/raw_videos/
+data/processed/*/frames/
+data/processed/*/preprocessed/
+
+# Ignore Python compiled files
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environments
+env/
+venv/

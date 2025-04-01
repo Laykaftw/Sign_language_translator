@@ -1,0 +1,13 @@
+torch==2.6.0
+torchvision==0.21.0
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
+numpy==2.0.2
+tqdm==4.67.1
+mediapipe==0.10.11
+scikit-learn==1.5.2
+matplotlib==3.9.4
+requests==2.32.3
+rich==13.9.4
+pillow==11.1.0
+protobuf==3.20.3  # Updated to be compatible with mediapipe==0.10.11
