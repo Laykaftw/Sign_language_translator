@@ -7,6 +7,10 @@ import torch
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 
 def preprocess_videos(input_dir, output_dir):
+    """
+    Preprocess videos by converting them into frames, applying data augmentation,
+    normalizing, removing background, and segmenting hands using Mask R-CNN.
+    """
     # Set device to GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -15,7 +19,7 @@ def preprocess_videos(input_dir, output_dir):
     model = maskrcnn_resnet50_fpn_v2(pretrained=True).to(device)
     model.eval()
     
-    # Preprocessing pipeline
+    # Define preprocessing pipeline
     transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.RandomHorizontalFlip(),
@@ -47,7 +51,6 @@ def preprocess_videos(input_dir, output_dir):
             
             cap = cv2.VideoCapture(video_path)
             frame_count = 0
-            
             
             while True:
                 ret, frame = cap.read()
@@ -101,3 +104,11 @@ def preprocess_videos(input_dir, output_dir):
             cap.release()
     
     print("Preprocessing complete.")
+
+if __name__ == "__main__":
+    # Define input and output directories
+    input_directory = "data/raw_videos"
+    output_directory = "data/processed"
+    
+    # Run preprocessing
+    preprocess_videos(input_directory, output_directory)

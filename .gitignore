@@ -1,7 +1,6 @@
 # Ignore raw data and preprocessed frames
 data/raw_videos/
-data/processed/*/frames/
-data/processed/*/preprocessed/
+data/processed/
 
 # Ignore Python compiled files
 __pycache__/
