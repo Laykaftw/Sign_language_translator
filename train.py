@@ -1,115 +1,232 @@
+"""Main training script for the Sign Language Model."""
 import os
-import numpy as np
+import time
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+# from tqdm import tqdm # Removed tqdm import
+import numpy as np # For metrics calculation
 
-# Define a custom dataset
-class SignLanguageDataset(Dataset):
-    def __init__(self, data_dir, sequence_length=10):
-        self.sequence_length = sequence_length
-        self.data = []
-        self.labels = []
-        self.label_map = {}
-        self.class_names = []  # List to store class names
-        
-        # Sort sign directories to ensure consistent label order
-        for idx, sign_dir in enumerate(sorted(os.listdir(data_dir))):  # Added sorted()
-            sign_path = os.path.join(data_dir, sign_dir)
-            if not os.path.isdir(sign_path):
-                continue
-            self.label_map[sign_dir] = idx
-            self.class_names.append(sign_dir)  # Store class names in order
-            
-            for video_dir in os.listdir(sign_path):
-                spatial_dir = os.path.join(sign_path, video_dir, "spatial_features")
-                motion_dir = os.path.join(sign_path, video_dir, "motion_features")
-                
-                if not os.path.exists(spatial_dir) or not os.path.exists(motion_dir):
-                    print(f"Skipping incomplete video: {video_dir}")
-                    continue
-                
-                spatial_files = sorted(os.listdir(spatial_dir))
-                motion_files = sorted(os.listdir(motion_dir))
-                min_length = min(len(spatial_files), len(motion_files))
-                
-                for i in range(min_length - sequence_length + 1):
-                    self.data.append((spatial_dir, motion_dir, i))
-                    self.labels.append(idx)
-    
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        spatial_dir, motion_dir, start_idx = self.data[idx]
-        spatial_files = sorted(os.listdir(spatial_dir))
-        motion_files = sorted(os.listdir(motion_dir))
-        
-        spatial_seq = []
-        motion_seq = []
-        for j in range(start_idx, start_idx + self.sequence_length):
-            s = np.load(os.path.join(spatial_dir, spatial_files[j])).flatten()
-            m = np.load(os.path.join(motion_dir, motion_files[j])).flatten()
-            spatial_seq.append(s)
-            motion_seq.append(m)
-        
-        combined_seq = np.concatenate([spatial_seq, motion_seq], axis=1)
-        return torch.tensor(combined_seq, dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.long)
-    
-    # NEW: Add this method to retrieve class names
-    def get_class_names(self):
-        return self.class_names
+# Local imports
+from models import SignLanguageModel
+from utils.data_utils import get_data_loaders
+from utils.metrics import calculate_metrics # Import metrics calculation
+from configs import config # Import configuration
 
-class CNNSaLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_classes):
-        super(CNNSaLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)  # Ensure batch_first=True
-        self.fc = nn.Linear(hidden_size, num_classes)
-    
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)  # Input shape: (batch_size, sequence_length, input_size)
-        out = self.fc(lstm_out[:, -1, :])  # Use the last time step's output
-        return out
+def train_epoch(model, data_loader, criterion, optimizer, device):
+    """Train the model for one epoch."""
+    model.train()
+    running_loss = 0.0
+    correct_predictions = 0
+    total_samples = 0
 
-# Training loop
-def train_model(data_dir, epochs=10, batch_size=32, learning_rate=0.001, sequence_length=10):
-    # Create dataset and dataloader
-    dataset = SignLanguageDataset(data_dir, sequence_length=sequence_length)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
-    # Initialize model, loss function, and optimizer
-    input_size = dataset[0][0].shape[1]  # Infer input size from the first sample
-    hidden_size = 128
-    num_classes = len(set(dataset.labels))
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = CNNSaLSTM(input_size, hidden_size, num_classes).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    
-    # Training loop
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-        
-        for inputs, labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
+    print("    [Train Epoch] Starting...")
+    # Wrap data_loader with tqdm for a progress bar - REMOVED
+    # progress_bar = tqdm(data_loader, desc="Training", leave=False)
+    print("    [Train Epoch] Starting batch iteration (without tqdm)...") # <-- Modified print
+
+    # Iterate directly over data_loader
+    num_batches = len(data_loader) # Get total number of batches for printing progress
+    for i, (sequences, labels) in enumerate(data_loader): # <-- Iterate directly
+        print(f"      [Train Epoch] Loading batch {i}...")
+        sequences, labels = sequences.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(sequences)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * sequences.size(0)
+        _, predicted = torch.max(outputs.data, 1)
+        total_samples += labels.size(0)
+        correct_predictions += (predicted == labels).sum().item()
+
+        # Update progress bar description - REMOVED
+        # progress_bar.set_postfix(loss=loss.item())
+        # Print batch loss periodically instead
+        if (i + 1) % 10 == 0 or (i + 1) == num_batches: # Print every 10 batches or on the last batch
+             print(f"      [Train Epoch] Batch {i+1}/{num_batches}, Loss: {loss.item():.4f}")
+
+
+    print("    [Train Epoch] Finished batch iteration.")
+    if total_samples == 0:
+        print("    [Train Epoch] Warning: No samples processed in this epoch.")
+        return 0.0, 0.0
+    epoch_loss = running_loss / total_samples
+    epoch_acc = correct_predictions / total_samples
+    print(f"    [Train Epoch] Epoch finished. Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}")
+    return epoch_loss, epoch_acc
+
+def validate_epoch(model, data_loader, criterion, device):
+    """Validate the model for one epoch."""
+    model.eval()
+    running_loss = 0.0
+    all_labels = []
+    all_predictions = []
+
+    print("    [Val Epoch] Starting...")
+    # Wrap data_loader with tqdm for a progress bar - REMOVED
+    # progress_bar = tqdm(data_loader, desc="Validation", leave=False)
+    print("    [Val Epoch] Starting batch iteration (without tqdm)...") # <-- Modified print
+
+    with torch.no_grad():
+        # Iterate directly over data_loader
+        num_batches = len(data_loader) # Get total number of batches for printing progress
+        for i, (sequences, labels) in enumerate(data_loader): # <-- Iterate directly
+            print(f"      [Val Epoch] Loading batch {i}...")
+            sequences, labels = sequences.to(device), labels.to(device)
+            outputs = model(sequences)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
-    
-    # Save the trained model
-    torch.save(model.state_dict(), "cnn_sa_lstm_model.pth")
-    print("Model saved as cnn_sa_lstm_model.pth")
+
+            running_loss += loss.item() * sequences.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            all_labels.extend(labels.cpu().numpy())
+            all_predictions.extend(predicted.cpu().numpy())
+
+            # Update progress bar description - REMOVED
+            # progress_bar.set_postfix(loss=loss.item())
+            # Print batch loss periodically instead
+            if (i + 1) % 5 == 0 or (i + 1) == num_batches: # Print every 5 batches or on the last batch
+                 print(f"      [Val Epoch] Batch {i+1}/{num_batches}, Loss: {loss.item():.4f}")
+
+
+    print("    [Val Epoch] Finished batch iteration.")
+    num_val_samples = len(data_loader.sampler) if data_loader.sampler else len(data_loader.dataset)
+    if num_val_samples == 0:
+        print("    [Val Epoch] Warning: No validation samples found.")
+        return 0.0, {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0}
+
+    epoch_loss = running_loss / num_val_samples
+    metrics = calculate_metrics(all_labels, all_predictions)
+    print(f"    [Val Epoch] Epoch finished. Loss: {epoch_loss:.4f}, Acc: {metrics['accuracy']:.4f}")
+    return epoch_loss, metrics
+
+def main():
+    """Main training loop."""
+    # Ensure saved_models directory exists
+    print(f"Attempting to create directory: {config.MODEL_SAVE_DIR}")
+    os.makedirs(config.MODEL_SAVE_DIR, exist_ok=True)
+    print("Directory check/creation finished.")
+
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # Get data loaders and class names
+    print("\nLoading data...")
+    train_loader, val_loader, class_names = get_data_loaders(
+        data_dir=config.DATA_DIR,
+        batch_size=config.BATCH_SIZE,
+        sequence_length=config.SEQUENCE_LENGTH,
+        input_size=config.INPUT_SIZE,
+        num_workers=config.NUM_WORKERS,
+        validation_split=config.VALIDATION_SPLIT
+    )
+
+    # Check if data loaders were created successfully
+    if train_loader is None or val_loader is None or not class_names:
+        print("Error: Failed to create data loaders. Exiting.")
+        return
+
+    num_classes = len(class_names)
+    print(f"Number of classes: {num_classes}")
+
+    # Save class names
+    class_names_path = config.CLASS_NAMES_FILE
+    try:
+        with open(class_names_path, 'w') as f:
+            for name in class_names:
+                f.write(f"{name}\n")
+        print(f"Class names saved to {class_names_path}")
+    except Exception as e:
+        print(f"Error saving class names to {class_names_path}: {e}")
+
+    # Initialize model
+    print("\nInitializing model...")
+    model = SignLanguageModel(
+        num_classes=num_classes,
+        input_size=config.INPUT_SIZE,
+        hidden_size=config.HIDDEN_SIZE,
+        dropout_rate=config.DROPOUT_RATE,
+        bidirectional=config.BIDIRECTIONAL,
+        num_lstm_layers=config.NUM_LSTM_LAYERS
+    ).to(device)
+    print("Model initialized.")
+
+    # Print model summary
+    print("\nModel architecture:")
+    print(model)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+
+    # Loss function and optimizer
+    print("Defining loss function (CrossEntropyLoss)...")
+    criterion = nn.CrossEntropyLoss()
+    print("Defining optimizer (Adam)...")
+    optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
+
+    # Learning rate scheduler
+    print("Defining LR scheduler (ReduceLROnPlateau)...")
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=config.REDUCE_LR_FACTOR, patience=config.REDUCE_LR_PATIENCE, verbose=True)
+
+    # Training loop setup
+    print("Setting up training loop variables...")
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+
+    print("\nStarting training...")
+    start_time = time.time()
+
+    for epoch in range(config.NUM_EPOCHS):
+        epoch_start_time = time.time()
+        print(f"\n--- Epoch {epoch+1}/{config.NUM_EPOCHS} ---")
+
+        print("  Calling train_epoch...")
+        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device) # Calls modified function
+        print("  train_epoch finished.")
+
+        print("  Calling validate_epoch...")
+        val_loss, val_metrics = validate_epoch(model, val_loader, criterion, device) # Calls modified function
+        print("  validate_epoch finished.")
+
+        epoch_duration = time.time() - epoch_start_time
+
+        # Print epoch results
+        print(f"Epoch {epoch+1} Summary:")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_metrics['accuracy']:.4f}")
+        print(f"  Val Precision: {val_metrics['precision']:.4f} | Val Recall: {val_metrics['recall']:.4f} | Val F1: {val_metrics['f1']:.4f}")
+        print(f"  Epoch Duration: {epoch_duration:.2f}s")
+
+        # Update learning rate scheduler
+        scheduler.step(val_loss)
+
+        # Save the best model based on validation loss
+        if val_loss < best_val_loss:
+            print(f"Validation loss improved ({best_val_loss:.4f} --> {val_loss:.4f}). Saving model...")
+            best_val_loss = val_loss
+            try:
+                torch.save(model.state_dict(), config.BEST_MODEL_PATH)
+                print(f"Model saved to {config.BEST_MODEL_PATH}")
+                epochs_no_improve = 0 # Reset counter
+            except Exception as e:
+                print(f"Error saving model: {e}")
+        else:
+            epochs_no_improve += 1
+            print(f"Validation loss did not improve. {epochs_no_improve}/{config.EARLY_STOPPING_PATIENCE}")
+
+        # Early stopping
+        if epochs_no_improve >= config.EARLY_STOPPING_PATIENCE:
+            print(f"\nEarly stopping triggered after {epochs_no_improve} epochs without improvement.")
+            break
+
+    total_training_time = time.time() - start_time
+    print(f"\nTraining finished in {total_training_time // 60:.0f}m {total_training_time % 60:.0f}s")
+    print(f"Best validation loss: {best_val_loss:.4f}")
 
 if __name__ == "__main__":
-    input_directory = "data/processed"
-    train_model(input_directory, sequence_length=10)  # Set sequence length to 10
+    main()
